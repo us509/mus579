@@ -26,17 +26,49 @@ local WHATSAPP_INTL = "923261421100"
 
 local ENGLISH_DESCRIPTION =
   "Audio Ducking Studio is a fast, 100% offline audio mixing and auto-ducking extension built for Jieshuo Screen Reader.\n\n" ..
-  "What It Does:\n" ..
+  "Key Features:\n" ..
   "- Combines your main voice audio with any background music.\n" ..
-  "- Automatically lowers background music whenever you speak, and smoothly raises it during pauses.\n" ..
-  "- Adds a 1.5-second background music intro before your voice starts and a 1.5-second outro after your voice finishes.\n" ..
-  "- Automatically loops background music if it is shorter than your main audio.\n\n" ..
+  "- Automatically lowers background music when you speak and smoothly raises it during silence.\n" ..
+  "- Adds a 1.5-second background music intro before your voice starts and a 1.5-second outro after your voice ends.\n" ..
+  "- Automatically loops background music if it is shorter than your main audio.\n" ..
+  "- Customizable Ducking Settings directly on the home screen: Audio Ducking Percentage (10% to 80%), Silence Duration (0.2s to 2.0s), Gradual Fade Down (0.1s to 1.0s), and Gradual Fade Up (0.3s to 1.5s).\n" ..
+  "- Built-in Diagnostic Report in Settings to inspect device details, feature health, and error logs.\n\n" ..
   "How To Use:\n" ..
-  "1. Tap Audio to choose your main voice recording (tap any file to preview and select, then tap Done).\n" ..
-  "2. Tap BG Music to choose your background music track.\n" ..
-  "3. Adjust Voice Volume and Music Volume from 5% to 100% (50% is Normal).\n" ..
-  "4. Tap Create and wait for progress to reach 100%.\n" ..
-  "5. Once finished, use Play/Pause to listen, Save to store in Music/AudioDucking, or Share directly to WhatsApp and other apps."
+  "1. Tap Audio to choose your main voice recording, then tap Done.\n" ..
+  "2. Tap BG Music to choose your background music track, then tap Done.\n" ..
+  "3. Adjust Voice Volume (default 100%) and Music Volume (default 50%).\n" ..
+  "4. Tap Ducking to customize ducking percentage, silence duration, fade down, and fade up.\n" ..
+  "5. Tap Create and wait for progress to reach 100%.\n" ..
+  "6. Once generated, use Play/Pause to listen, Save to store in Music/AudioDucking, or Share directly to WhatsApp and other apps."
+
+-- ==========================================
+-- DIAGNOSTIC LOGS & SAVED PREFERENCES
+-- ==========================================
+local errorLogs = {}
+local function addLog(msg)
+  local ts = SimpleDateFormat("HH:mm:ss").format(Date())
+  table.insert(errorLogs, "[" .. ts .. "] " .. tostring(msg))
+  if #errorLogs > 40 then
+    table.remove(errorLogs, 1)
+  end
+end
+
+local prefs = ctx.getSharedPreferences("AudioDuckingStudioPrefs", Context.MODE_PRIVATE)
+local duckPct = prefs.getInt("duckPct", 20)        -- Default: 20%
+local silenceMs = prefs.getInt("silenceMs", 500)   -- Default: 0.5s
+local fadeDownMs = prefs.getInt("fadeDownMs", 300) -- Default: 0.3s
+local fadeUpMs = prefs.getInt("fadeUpMs", 600)     -- Default: 0.6s
+
+local function saveDuckingPrefs()
+  pcall(function()
+    local ed = prefs.edit()
+    ed.putInt("duckPct", duckPct)
+    ed.putInt("silenceMs", silenceMs)
+    ed.putInt("fadeDownMs", fadeDownMs)
+    ed.putInt("fadeUpMs", fadeUpMs)
+    ed.apply()
+  end)
+end
 
 -- ==========================================
 -- HELPERS
@@ -44,7 +76,7 @@ local ENGLISH_DESCRIPTION =
 local function speak(msg)
   pcall(function()
     if service and service.speak then
-      service.speak(msg)
+      service.speak(tostring(msg))
     end
   end)
 end
@@ -60,6 +92,10 @@ local function formatDuration(ms)
   local mins = math.floor(totalSec / 60)
   local secs = totalSec % 60
   return string.format("%02d:%02d", mins, secs)
+end
+
+local function formatSec(ms)
+  return string.format("%.1f sec", ms / 1000.0)
 end
 
 local function focusViewForJieshuo(view)
@@ -89,6 +125,22 @@ local function createFullScreenDialog(contentView)
   return dlg
 end
 
+local function showChoiceDialog(items, checkedIdx, onPicked)
+  local builder = AlertDialog.Builder(ctx)
+  builder.setSingleChoiceItems(items, checkedIdx, DialogInterface.OnClickListener{
+    onClick = function(dialog, which)
+      dialog.dismiss()
+      onPicked(which + 1)
+    end
+  })
+  builder.setNegativeButton("Cancel", nil)
+  local dlg = builder.create()
+  pcall(function()
+    dlg.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
+  end)
+  dlg.show()
+end
+
 -- ==========================================
 -- STATE VARIABLES
 -- ==========================================
@@ -97,8 +149,8 @@ local mainAudioName = "None"
 local bgMusicPath = nil
 local bgMusicName = "None"
 
-local mainVolPct = 50 -- 50% = Normal
-local bgVolPct = 50   -- 50% = Normal
+local mainVolPct = 100 -- Default: 100% (Normal 1.0x)
+local bgVolPct = 50    -- Default: 50% (Normal 1.0x)
 
 local cacheDir = ctx.getCacheDir().getAbsolutePath()
 local tempMainPcm = cacheDir .. "/duck_main.pcm"
@@ -141,6 +193,281 @@ local function stopResultPlayer(playBtn)
 end
 
 -- ==========================================
+-- AUDIO DUCKING SETTINGS SCREEN
+-- ==========================================
+local function openDuckingSettingsDialog()
+  local dsDlg = nil
+  local ids = {}
+
+  local layout = {
+    LinearLayout,
+    orientation = "vertical",
+    layout_width = "fill",
+    layout_height = "fill",
+    padding = "14dp",
+    backgroundColor = "#121212",
+    {
+      TextView,
+      text = "Audio Ducking Settings",
+      textSize = "21sp",
+      textColor = "#00E676",
+      gravity = "center",
+      layout_width = "fill",
+      layout_height = "wrap",
+      paddingBottom = "12dp"
+    },
+    {
+      LinearLayout,
+      orientation = "vertical",
+      layout_width = "fill",
+      layout_height = "0dp",
+      layout_weight = "1",
+      gravity = "center",
+      {
+        Button,
+        id = "btnDuckPct",
+        text = "Audio Ducking: " .. duckPct .. "%",
+        layout_width = "fill",
+        layout_height = "wrap",
+        layout_marginBottom = "10dp"
+      },
+      {
+        Button,
+        id = "btnSilenceDur",
+        text = "Silence Duration: " .. formatSec(silenceMs),
+        layout_width = "fill",
+        layout_height = "wrap",
+        layout_marginBottom = "10dp"
+      },
+      {
+        Button,
+        id = "btnFadeDown",
+        text = "Fade Down (Slow Down): " .. formatSec(fadeDownMs),
+        layout_width = "fill",
+        layout_height = "wrap",
+        layout_marginBottom = "10dp"
+      },
+      {
+        Button,
+        id = "btnFadeUp",
+        text = "Fade Up (Speed Up): " .. formatSec(fadeUpMs),
+        layout_width = "fill",
+        layout_height = "wrap"
+      }
+    },
+    {
+      Button,
+      id = "btnDsBack",
+      text = "Go Back",
+      layout_width = "fill",
+      layout_height = "wrap",
+      layout_marginTop = "10dp"
+    }
+  }
+
+  local view = loadlayout(layout, ids)
+
+  ids.btnDuckPct.onClick = function()
+    local vals = {10, 20, 30, 40, 50, 60, 70, 80}
+    local labels = {}
+    local checked = 1
+    for i, v in ipairs(vals) do
+      labels[i] = v .. "%" .. (v == 20 and " (Default)" or "")
+      if v == duckPct then checked = i - 1 end
+    end
+    showChoiceDialog(labels, checked, function(idx)
+      duckPct = vals[idx]
+      saveDuckingPrefs()
+      ids.btnDuckPct.setText("Audio Ducking: " .. duckPct .. "%")
+      speak("Audio ducking " .. duckPct .. " percent")
+    end)
+  end
+
+  ids.btnSilenceDur.onClick = function()
+    local vals = {200, 500, 1000, 1500, 2000}
+    local labels = {"0.2 sec", "0.5 sec (Default)", "1.0 sec", "1.5 sec", "2.0 sec"}
+    local checked = 1
+    for i, v in ipairs(vals) do
+      if v == silenceMs then checked = i - 1 end
+    end
+    showChoiceDialog(labels, checked, function(idx)
+      silenceMs = vals[idx]
+      saveDuckingPrefs()
+      ids.btnSilenceDur.setText("Silence Duration: " .. formatSec(silenceMs))
+      speak("Silence duration " .. formatSec(silenceMs))
+    end)
+  end
+
+  ids.btnFadeDown.onClick = function()
+    local vals = {100, 300, 500, 1000}
+    local labels = {"Fast (0.1 sec)", "Medium (0.3 sec - Default)", "Smooth (0.5 sec)", "Slow (1.0 sec)"}
+    local checked = 1
+    for i, v in ipairs(vals) do
+      if v == fadeDownMs then checked = i - 1 end
+    end
+    showChoiceDialog(labels, checked, function(idx)
+      fadeDownMs = vals[idx]
+      saveDuckingPrefs()
+      ids.btnFadeDown.setText("Fade Down (Slow Down): " .. formatSec(fadeDownMs))
+      speak("Fade down " .. formatSec(fadeDownMs))
+    end)
+  end
+
+  ids.btnFadeUp.onClick = function()
+    local vals = {300, 600, 1000, 1500}
+    local labels = {"Fast (0.3 sec)", "Medium (0.6 sec - Default)", "Smooth (1.0 sec)", "Slow (1.5 sec)"}
+    local checked = 1
+    for i, v in ipairs(vals) do
+      if v == fadeUpMs then checked = i - 1 end
+    end
+    showChoiceDialog(labels, checked, function(idx)
+      fadeUpMs = vals[idx]
+      saveDuckingPrefs()
+      ids.btnFadeUp.setText("Fade Up (Speed Up): " .. formatSec(fadeUpMs))
+      speak("Fade up " .. formatSec(fadeUpMs))
+    end)
+  end
+
+  ids.btnDsBack.onClick = function()
+    if dsDlg then dsDlg.dismiss() end
+    speak("Main screen")
+  end
+
+  dsDlg = createFullScreenDialog(view)
+  speak("Audio Ducking Settings")
+end
+
+-- ==========================================
+-- SETTINGS -> DIAGNOSTIC REPORT SCREEN
+-- ==========================================
+local function buildDiagnosticReport()
+  local phoneName = tostring(Build.MANUFACTURER) .. " " .. tostring(Build.MODEL)
+  local androidVer = tostring(Build.VERSION.RELEASE) .. " (SDK " .. tostring(Build.VERSION.SDK_INT) .. ")"
+  local cacheOk = File(cacheDir).canWrite() and "OK" or "NOT WRITABLE"
+  local logText = (#errorLogs > 0) and table.concat(errorLogs, "\n") or "No errors recorded. All features working normally."
+
+  return "=== " .. EXT_NAME .. " Report ===\n" ..
+         "Phone: " .. phoneName .. "\n" ..
+         "Android: " .. androidVer .. "\n" ..
+         "Cache Status: " .. cacheOk .. "\n" ..
+         "Voice Vol: " .. mainVolPct .. "% | Music Vol: " .. bgVolPct .. "%\n" ..
+         "Ducking: " .. duckPct .. "% | Silence: " .. formatSec(silenceMs) .. "\n" ..
+         "Fade Down: " .. formatSec(fadeDownMs) .. " | Fade Up: " .. formatSec(fadeUpMs) .. "\n" ..
+         "Audio Selected: " .. mainAudioName .. "\n" ..
+         "BG Music Selected: " .. bgMusicName .. "\n\n" ..
+         "--- Logs / Errors ---\n" .. logText
+end
+
+local function openReportDialog(settingsDlg)
+  local repDlg = nil
+  local ids = {}
+  local reportText = buildDiagnosticReport()
+
+  local layout = {
+    LinearLayout,
+    orientation = "vertical",
+    layout_width = "fill",
+    layout_height = "fill",
+    padding = "14dp",
+    backgroundColor = "#121212",
+    {
+      TextView,
+      text = "Diagnostic Report",
+      textSize = "21sp",
+      textColor = "#00E676",
+      gravity = "center",
+      layout_width = "fill",
+      layout_height = "wrap",
+      paddingBottom = "10dp"
+    },
+    {
+      ScrollView,
+      layout_width = "fill",
+      layout_height = "0dp",
+      layout_weight = "1",
+      backgroundColor = "#1E1E1E",
+      padding = "12dp",
+      {
+        TextView,
+        text = reportText,
+        textSize = "14sp",
+        textColor = "#FFFFFF",
+        layout_width = "fill",
+        layout_height = "wrap"
+      }
+    },
+    {
+      LinearLayout,
+      orientation = "vertical",
+      layout_width = "fill",
+      layout_height = "wrap",
+      paddingTop = "10dp",
+      {
+        LinearLayout,
+        orientation = "horizontal",
+        layout_width = "fill",
+        layout_height = "wrap",
+        {
+          Button,
+          id = "btnCopyRep",
+          text = "Copy Report",
+          layout_width = "0dp",
+          layout_weight = "1",
+          layout_height = "wrap"
+        },
+        {
+          Button,
+          id = "btnSendRepWa",
+          text = "Send WhatsApp",
+          layout_width = "0dp",
+          layout_weight = "1",
+          layout_height = "wrap"
+        }
+      },
+      {
+        Button,
+        id = "btnRepBack",
+        text = "Go Back",
+        layout_width = "fill",
+        layout_height = "wrap",
+        layout_marginTop = "6dp"
+      }
+    }
+  }
+
+  local view = loadlayout(layout, ids)
+
+  ids.btnCopyRep.onClick = function()
+    pcall(function()
+      local cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
+      cm.setPrimaryClip(ClipData.newPlainText("Diagnostic Report", reportText))
+    end)
+    speak("Report copied")
+    toast("Report copied")
+  end
+
+  ids.btnSendRepWa.onClick = function()
+    if repDlg then repDlg.dismiss() end
+    if settingsDlg then settingsDlg.dismiss() end
+    if mainDialog then mainDialog.dismiss() end
+    pcall(function()
+      local url = "https://wa.me/" .. WHATSAPP_INTL .. "?text=" .. Uri.encode(reportText)
+      local intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      ctx.startActivity(intent)
+    end)
+  end
+
+  ids.btnRepBack.onClick = function()
+    if repDlg then repDlg.dismiss() end
+    speak("Settings")
+  end
+
+  repDlg = createFullScreenDialog(view)
+  speak("Diagnostic Report")
+end
+
+-- ==========================================
 -- SETTINGS -> DESCRIPTION SCREEN
 -- ==========================================
 local function openDescriptionDialog()
@@ -155,7 +482,7 @@ local function openDescriptionDialog()
     backgroundColor = "#121212",
     {
       TextView,
-      text = "Description",
+      text = "Extension Description",
       textSize = "21sp",
       textColor = "#00E676",
       gravity = "center",
@@ -192,11 +519,11 @@ local function openDescriptionDialog()
   local view = loadlayout(layout, ids)
   ids.btnDescBack.onClick = function()
     if descDlg then descDlg.dismiss() end
-    speak("Settings menu")
+    speak("Settings")
   end
 
   descDlg = createFullScreenDialog(view)
-  speak("Description")
+  speak("Extension Description")
 end
 
 -- ==========================================
@@ -287,10 +614,9 @@ local function openAboutSupportDialog(settingsDlg)
   ids.btnCopyWa.onClick = function()
     pcall(function()
       local cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
-      local clip = ClipData.newPlainText("WhatsApp", WHATSAPP_LOCAL)
-      cm.setPrimaryClip(clip)
+      cm.setPrimaryClip(ClipData.newPlainText("WhatsApp", WHATSAPP_LOCAL))
     end)
-    speak("WhatsApp number copy ho gaya")
+    speak("WhatsApp number copied")
     toast("Copied: " .. WHATSAPP_LOCAL)
   end
 
@@ -307,7 +633,7 @@ local function openAboutSupportDialog(settingsDlg)
 
   ids.btnAboutBack.onClick = function()
     if aboutDlg then aboutDlg.dismiss() end
-    speak("Settings menu")
+    speak("Settings")
   end
 
   aboutDlg = createFullScreenDialog(view)
@@ -346,6 +672,14 @@ local function openSettingsDialog()
       gravity = "center",
       {
         Button,
+        id = "btnOpenReport",
+        text = "Diagnostic Report",
+        layout_width = "fill",
+        layout_height = "wrap",
+        layout_marginBottom = "10dp"
+      },
+      {
+        Button,
         id = "btnOpenDesc",
         text = "Extension Description",
         layout_width = "fill",
@@ -372,6 +706,10 @@ local function openSettingsDialog()
 
   local view = loadlayout(layout, ids)
 
+  ids.btnOpenReport.onClick = function()
+    openReportDialog(settingsDlg)
+  end
+
   ids.btnOpenDesc.onClick = function()
     openDescriptionDialog()
   end
@@ -392,32 +730,20 @@ end
 -- ==========================================
 -- VOLUME PICKER (5% to 100%, 5% step)
 -- ==========================================
-local function openVolumePicker(currentPct, onPicked)
+local function openVolumePicker(currentPct, normalPct, onPicked)
   local items = {}
   local checkedIdx = 0
   local idx = 0
   for p = 5, 100, 5 do
     local label = tostring(p) .. "%"
-    if p == 50 then label = label .. " (Normal)" end
+    if p == normalPct then label = label .. " (Default)" end
     table.insert(items, label)
     if p == currentPct then checkedIdx = idx end
     idx = idx + 1
   end
-
-  local builder = AlertDialog.Builder(ctx)
-  builder.setSingleChoiceItems(items, checkedIdx, DialogInterface.OnClickListener{
-    onClick = function(dialog, which)
-      local chosenPct = (which + 1) * 5
-      dialog.dismiss()
-      onPicked(chosenPct)
-    end
-  })
-  builder.setNegativeButton("Cancel", nil)
-  local dlg = builder.create()
-  pcall(function()
-    dlg.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
+  showChoiceDialog(items, checkedIdx, function(chosenIdx)
+    onPicked(chosenIdx * 5)
   end)
-  dlg.show()
 end
 
 -- ==========================================
@@ -425,37 +751,40 @@ end
 -- ==========================================
 local function getAllAudioFiles()
   local list = {}
-  local resolver = ctx.getContentResolver()
-  local uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
-  local projection = {
-    MediaStore.Audio.Media.DISPLAY_NAME,
-    MediaStore.Audio.Media.DATA,
-    MediaStore.Audio.Media.DURATION
-  }
-  local sortOrder = MediaStore.Audio.Media.DATE_MODIFIED .. " DESC"
-  local cursor = resolver.query(uri, projection, nil, nil, sortOrder)
-  if cursor then
-    while cursor.moveToNext() do
-      local name = cursor.getString(0)
-      local path = cursor.getString(1)
-      local dur = cursor.getLong(2)
-      if path and File(path).exists() then
-        table.insert(list, {
-          name = name or File(path).getName(),
-          path = path,
-          duration = dur
-        })
+  local ok, err = pcall(function()
+    local resolver = ctx.getContentResolver()
+    local uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+    local projection = {
+      MediaStore.Audio.Media.DISPLAY_NAME,
+      MediaStore.Audio.Media.DATA,
+      MediaStore.Audio.Media.DURATION
+    }
+    local sortOrder = MediaStore.Audio.Media.DATE_MODIFIED .. " DESC"
+    local cursor = resolver.query(uri, projection, nil, nil, sortOrder)
+    if cursor then
+      while cursor.moveToNext() do
+        local name = cursor.getString(0)
+        local path = cursor.getString(1)
+        local dur = cursor.getLong(2)
+        if path and File(path).exists() then
+          table.insert(list, {
+            name = name or File(path).getName(),
+            path = path,
+            duration = dur
+          })
+        end
       end
+      cursor.close()
     end
-    cursor.close()
-  end
+  end)
+  if not ok then addLog("Audio scan error: " .. tostring(err)) end
   return list
 end
 
 local function openAudioPicker(onSelected)
   local files = getAllAudioFiles()
   if #files == 0 then
-    speak("Phone storage mein koi audio file nahi mili")
+    speak("No audio files found")
     toast("No audio files found")
     return
   end
@@ -525,25 +854,26 @@ local function openAudioPicker(onSelected)
       adapter.notifyDataSetChanged()
 
       stopPreview()
-      pcall(function()
+      local okPlay, errPlay = pcall(function()
         previewPlayer = MediaPlayer()
         previewPlayer.setDataSource(files[selectedIndex].path)
         previewPlayer.prepare()
         previewPlayer.start()
       end)
+      if not okPlay then addLog("Preview error: " .. tostring(errPlay)) end
     end
   })
 
   ids.btnPickerCancel.onClick = function()
     stopPreview()
     if pickerDialog then pickerDialog.dismiss() end
-    speak("Cancel")
+    speak("Cancelled")
   end
 
   ids.btnPickerDone.onClick = function()
     stopPreview()
     if selectedIndex == -1 then
-      speak("Pehle koi audio select karein")
+      speak("Please select an audio file first")
       return
     end
     local chosen = files[selectedIndex]
@@ -558,7 +888,8 @@ end
 -- MAIN UI LAYOUT
 -- Top: Extension Name + Status
 -- Middle: Info / Progress / Duration
--- Bottom: Main Controls OR Result Controls (Play/Save/Share/Close)
+-- Bottom Row 1: Audio, BG Music, Voice 100%, Music 50%
+-- Bottom Row 2: Ducking, Create, Settings, Close
 -- ==========================================
 local ui = {}
 local mainLayout = {
@@ -608,7 +939,7 @@ local mainLayout = {
     {
       TextView,
       id = "txtSelectedInfo",
-      text = "Audio: None\nBG Music: None\nVoice: 50% | Music: 50%",
+      text = "Audio: None\nBG Music: None\nVoice: 100% | Music: 50%",
       textSize = "14sp",
       textColor = "#CCCCCC",
       gravity = "center",
@@ -641,7 +972,7 @@ local mainLayout = {
     }
   },
 
-  -- BOTTOM BAR 1: MAIN CONTROLS (Hidden after generation completes)
+  -- BOTTOM BAR 1: MAIN CONTROLS (2 Rows x 4 Buttons)
   {
     LinearLayout,
     id = "mainControlsBox",
@@ -650,7 +981,7 @@ local mainLayout = {
     layout_height = "wrap",
     paddingTop = "8dp",
 
-    -- Row 1: Audio, BG Music, Settings
+    -- Row 1: Audio, BG Music, Voice Vol, Music Vol
     {
       LinearLayout,
       orientation = "horizontal",
@@ -674,25 +1005,8 @@ local mainLayout = {
       },
       {
         Button,
-        id = "btnSettings",
-        text = "Settings",
-        layout_width = "0dp",
-        layout_weight = "1",
-        layout_height = "wrap"
-      }
-    },
-
-    -- Row 2: Voice Vol, Music Vol, Create, Close
-    {
-      LinearLayout,
-      orientation = "horizontal",
-      layout_width = "fill",
-      layout_height = "wrap",
-      paddingTop = "4dp",
-      {
-        Button,
         id = "btnMainVol",
-        text = "Voice 50%",
+        text = "Voice 100%",
         layout_width = "0dp",
         layout_weight = "1",
         layout_height = "wrap"
@@ -704,11 +1018,36 @@ local mainLayout = {
         layout_width = "0dp",
         layout_weight = "1",
         layout_height = "wrap"
+      }
+    },
+
+    -- Row 2: Audio Ducking, Create, Settings, Close
+    {
+      LinearLayout,
+      orientation = "horizontal",
+      layout_width = "fill",
+      layout_height = "wrap",
+      paddingTop = "4dp",
+      {
+        Button,
+        id = "btnDucking",
+        text = "Ducking",
+        layout_width = "0dp",
+        layout_weight = "1",
+        layout_height = "wrap"
       },
       {
         Button,
         id = "btnGenerate",
         text = "Create",
+        layout_width = "0dp",
+        layout_weight = "1",
+        layout_height = "wrap"
+      },
+      {
+        Button,
+        id = "btnSettings",
+        text = "Settings",
         layout_width = "0dp",
         layout_weight = "1",
         layout_height = "wrap"
@@ -800,8 +1139,8 @@ ui.btnSelectAudio.onClick = function()
     mainAudioPath = path
     mainAudioName = name
     refreshSelectedInfo()
-    ui.txtStatus.setText("Status: Audio select ho gayi")
-    speak("Audio select ho gayi")
+    ui.txtStatus.setText("Status: Audio selected")
+    speak("Audio selected")
   end)
 end
 
@@ -811,34 +1150,39 @@ ui.btnSelectBg.onClick = function()
     bgMusicPath = path
     bgMusicName = name
     refreshSelectedInfo()
-    ui.txtStatus.setText("Status: Background music select ho gaya")
-    speak("Background music select ho gaya")
+    ui.txtStatus.setText("Status: Background music selected")
+    speak("Background music selected")
   end)
-end
-
-ui.btnSettings.onClick = function()
-  if isProcessing then return end
-  openSettingsDialog()
 end
 
 ui.btnMainVol.onClick = function()
   if isProcessing then return end
-  openVolumePicker(mainVolPct, function(pct)
+  openVolumePicker(mainVolPct, 100, function(pct)
     mainVolPct = pct
     ui.btnMainVol.setText("Voice " .. pct .. "%")
     refreshSelectedInfo()
-    speak("Audio voice volume " .. pct .. " percent")
+    speak("Voice volume " .. pct .. " percent")
   end)
 end
 
 ui.btnBgVol.onClick = function()
   if isProcessing then return end
-  openVolumePicker(bgVolPct, function(pct)
+  openVolumePicker(bgVolPct, 50, function(pct)
     bgVolPct = pct
     ui.btnBgVol.setText("Music " .. pct .. "%")
     refreshSelectedInfo()
-    speak("Background music volume " .. pct .. " percent")
+    speak("Music volume " .. pct .. " percent")
   end)
+end
+
+ui.btnDucking.onClick = function()
+  if isProcessing then return end
+  openDuckingSettingsDialog()
+end
+
+ui.btnSettings.onClick = function()
+  if isProcessing then return end
+  openSettingsDialog()
 end
 
 -- ==========================================
@@ -857,8 +1201,8 @@ local function updateStepProgress(rawPct, msg)
 end
 
 -- ==========================================
--- IMPROVED AUTO-DUCKING ENGINE
--- (1.5s Intro + 25ms Snappy Ducking + 1.5s Outro)
+-- FAST & SAFE AUTO-DUCKING ENGINE
+-- (1.5s Intro + Custom Ducking/Silence/FadeDown/FadeUp + 1.5s Outro)
 -- ==========================================
 local function cleanupTemp()
   pcall(function() File(tempMainPcm).delete() end)
@@ -886,7 +1230,7 @@ local function decodeStepByStep(inPath, outPcmPath, pctStart, pctEnd, label, onF
         break
       end
     end
-    if trackIndex == -1 then error("Audio track nahi mila") end
+    if trackIndex == -1 then error("Audio track not found") end
 
     extractor.selectTrack(trackIndex)
     local mime = format.getString(MediaFormat.KEY_MIME)
@@ -921,7 +1265,7 @@ local function decodeStepByStep(inPath, outPcmPath, pctStart, pctEnd, label, onF
     end
 
     local okTick, errTick = pcall(function()
-      for step = 1, 10 do
+      for step = 1, 14 do
         if outEOS then break end
 
         if not inEOS then
@@ -979,17 +1323,17 @@ local function decodeStepByStep(inPath, outPcmPath, pctStart, pctEnd, label, onF
     if outEOS then
       closeAll()
       if totalBytes == 0 then
-        onFailed("Audio decode khali rahi")
+        onFailed("Decoded audio is empty")
       else
         updateStepProgress(pctEnd, label)
         onFinished(totalBytes, sr, ch)
       end
     else
-      mainHandler.postDelayed(Runnable{ run = tick }, 5)
+      mainHandler.postDelayed(Runnable{ run = tick }, 3)
     end
   end
 
-  mainHandler.postDelayed(Runnable{ run = tick }, 5)
+  mainHandler.postDelayed(Runnable{ run = tick }, 3)
 end
 
 local function mixStepByStep(mBytes, mSr, mCh, bBytes, bSr, bCh)
@@ -1012,13 +1356,15 @@ local function mixStepByStep(mBytes, mSr, mCh, bBytes, bSr, bCh)
     closeFiles()
     cleanupTemp()
     isProcessing = false
+    addLog("Mix open error: " .. tostring(openErr))
     ui.txtCenterProgress.setVisibility(View.GONE)
     ui.txtStatus.setText("Status: Error - " .. tostring(openErr))
-    speak("Mixing shuru karne mein masla aaya")
+    speak("Mixing error")
     return
   end
 
-  local mGain = mainVolPct / 50.0
+  -- Voice default 100% = 1.0x (clean, no distortion); Music default 50% = 1.0x
+  local mGain = mainVolPct / 100.0
   local bGain = bgVolPct / 50.0
   local mFrameSize = mCh * 2
   local bFrameSize = bCh * 2
@@ -1029,16 +1375,19 @@ local function mixStepByStep(mBytes, mSr, mCh, bBytes, bSr, bCh)
   local mainEndFrame = padFrames + totalMainFrames
   local totalOutFrames = padFrames + totalMainFrames + padFrames
 
-  local winFrames = math.max(1, math.floor(mSr * 0.025))
+  local winMs = 25
+  local winFrames = math.max(1, math.floor(mSr * (winMs / 1000.0)))
   local srRatio = bSr / mSr
 
+  -- User-configured Ducking Parameters
   local threshold = 450
-  local duckFloor = 0.15
-  local currentDuck = 1.0
-  local attackRate = 0.65
-  local releaseRate = 0.18
-  local holdWindows = 0
+  local duckFloor = duckPct / 100.0
+  local silenceWinCount = math.max(1, math.floor(silenceMs / winMs))
+  local fadeDownStep = (1.0 - duckFloor) / math.max(1, fadeDownMs / winMs)
+  local fadeUpStep = (1.0 - duckFloor) / math.max(1, fadeUpMs / winMs)
 
+  local currentDuck = 1.0
+  local holdWindows = 0
   local outFramePos = 0
   local writtenBytes = 0
 
@@ -1068,7 +1417,7 @@ local function mixStepByStep(mBytes, mSr, mCh, bBytes, bSr, bCh)
 
     local done = false
     local okMix, mixErr = pcall(function()
-      for step = 1, 4 do
+      for step = 1, 6 do
         if outFramePos >= totalOutFrames then
           done = true
           break
@@ -1115,16 +1464,15 @@ local function mixStepByStep(mBytes, mSr, mCh, bBytes, bSr, bCh)
           local bRaw, bgFramesNeeded = readBgChunk(framesHere)
 
           if avgAmp > threshold then
-            holdWindows = 8
+            holdWindows = silenceWinCount
           elseif holdWindows > 0 then
             holdWindows = holdWindows - 1
           end
 
-          local targetDuck = (holdWindows > 0) and duckFloor or 1.0
-          if targetDuck < currentDuck then
-            currentDuck = currentDuck + (targetDuck - currentDuck) * attackRate
+          if holdWindows > 0 then
+            currentDuck = math.max(duckFloor, currentDuck - fadeDownStep)
           else
-            currentDuck = currentDuck + (targetDuck - currentDuck) * releaseRate
+            currentDuck = math.min(1.0, currentDuck + fadeUpStep)
           end
 
           local bgScale = bGain * currentDuck
@@ -1158,9 +1506,10 @@ local function mixStepByStep(mBytes, mSr, mCh, bBytes, bSr, bCh)
       closeFiles()
       cleanupTemp()
       isProcessing = false
+      addLog("Mix tick error: " .. tostring(mixErr))
       ui.txtCenterProgress.setVisibility(View.GONE)
       ui.txtStatus.setText("Status: Error - " .. tostring(mixErr))
-      speak("Mixing mein masla aaya")
+      speak("Mixing error")
       return
     end
 
@@ -1183,25 +1532,24 @@ local function mixStepByStep(mBytes, mSr, mCh, bBytes, bSr, bCh)
       local totalSec = math.floor(outFramePos / mSr)
       local durStr = string.format("%02d:%02d", math.floor(totalSec / 60), totalSec % 60)
       currentStepPct = 100
-      ui.txtStatus.setText("Status: 100% - Audio mukammal ho gayi!")
+      ui.txtStatus.setText("Status: 100% - Audio generated")
       ui.txtCenterProgress.setVisibility(View.GONE)
-      ui.txtDuration.setText("Ready Audio - Duration: " .. durStr)
+      ui.txtDuration.setText("Duration: " .. durStr)
       ui.txtDuration.setVisibility(View.VISIBLE)
 
-      -- Hide main buttons and show ONLY Play/Pause, Save, Share, Close at bottom
       ui.mainControlsBox.setVisibility(View.GONE)
       ui.resultControlsBox.setVisibility(View.VISIBLE)
 
-      speak("100 percent, audio ban gayi hai, duration " .. durStr)
+      speak("Audio generated")
     else
       local rawPct = 50 + math.floor((outFramePos / totalOutFrames) * 50)
-      updateStepProgress(rawPct, "Audio ducking...")
+      updateStepProgress(rawPct, "Applying audio ducking...")
       collectgarbage("step", 20)
-      mainHandler.postDelayed(Runnable{ run = mixTick }, 5)
+      mainHandler.postDelayed(Runnable{ run = mixTick }, 3)
     end
   end
 
-  mainHandler.postDelayed(Runnable{ run = mixTick }, 5)
+  mainHandler.postDelayed(Runnable{ run = mixTick }, 3)
 end
 
 -- ==========================================
@@ -1209,11 +1557,11 @@ end
 -- ==========================================
 ui.btnGenerate.onClick = function()
   if isProcessing then
-    speak("Processing chal rahi hai")
+    speak("Processing in progress")
     return
   end
   if not mainAudioPath or not bgMusicPath then
-    speak("Pehle Audio aur Background Music dono select karein")
+    speak("Please select both Audio and Background Music first")
     toast("Select both Audio and Background Music first")
     return
   end
@@ -1228,22 +1576,23 @@ ui.btnGenerate.onClick = function()
   ui.txtDuration.setVisibility(View.GONE)
   ui.resultControlsBox.setVisibility(View.GONE)
   ui.txtCenterProgress.setVisibility(View.VISIBLE)
-  ui.txtStatus.setText("Status: 5% - Shuru ho raha hai...")
-  ui.txtCenterProgress.setText("Processing: 5%\nShuru ho raha hai...")
+  ui.txtStatus.setText("Status: 5% - Starting...")
+  ui.txtCenterProgress.setText("Processing: 5%\nStarting...")
 
   focusViewForJieshuo(ui.txtStatus)
-  speak("Processing shuru ho gayi hai")
+  speak("Processing started")
 
   local function onFail(err)
     cleanupTemp()
     isProcessing = false
+    addLog("Decode fail: " .. tostring(err))
     ui.txtCenterProgress.setVisibility(View.GONE)
     ui.txtStatus.setText("Status: Error - " .. tostring(err))
-    speak("Audio banane mein masla aaya")
+    speak("Error generating audio")
   end
 
-  decodeStepByStep(mainAudioPath, tempMainPcm, 5, 25, "Main audio decode...", function(mBytes, mSr, mCh)
-    decodeStepByStep(bgMusicPath, tempBgPcm, 25, 50, "Background music decode...", function(bBytes, bSr, bCh)
+  decodeStepByStep(mainAudioPath, tempMainPcm, 5, 25, "Decoding main audio...", function(mBytes, mSr, mCh)
+    decodeStepByStep(bgMusicPath, tempBgPcm, 25, 50, "Decoding background music...", function(bBytes, bSr, bCh)
       mixStepByStep(mBytes, mSr, mCh, bBytes, bSr, bCh)
     end, onFail)
   end, onFail)
@@ -1258,10 +1607,10 @@ ui.btnPlayPause.onClick = function()
     pcall(function() resultPlayer.pause() end)
     isResultPlaying = false
     ui.btnPlayPause.setText("Play")
-    speak("Pause")
+    speak("Paused")
   else
     if not resultPlayer then
-      pcall(function()
+      local okP, errP = pcall(function()
         resultPlayer = MediaPlayer()
         resultPlayer.setDataSource(tempOutPath)
         resultPlayer.prepare()
@@ -1272,6 +1621,7 @@ ui.btnPlayPause.onClick = function()
           end
         })
       end)
+      if not okP then addLog("Result play error: " .. tostring(errP)) end
     end
     pcall(function()
       resultPlayer.start()
@@ -1296,7 +1646,7 @@ local function saveToStorage()
 
   local uri = resolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
   if not uri then
-    error("MediaStore mein file create nahi ho saki")
+    error("Failed to create file in MediaStore")
   end
 
   local outStream = resolver.openOutputStream(uri)
@@ -1320,11 +1670,12 @@ ui.btnSave.onClick = function()
   local ok, uriOrErr, savedPath = pcall(saveToStorage)
   if ok and uriOrErr then
     ui.txtStatus.setText("Status: Saved - " .. tostring(savedPath))
-    speak("Audio phone storage mein save ho gayi hai")
+    speak("Audio saved")
     toast("Saved: " .. tostring(savedPath))
   else
+    addLog("Save error: " .. tostring(uriOrErr))
     ui.txtStatus.setText("Status: Save Error - " .. tostring(uriOrErr))
-    speak("Save karne mein masla aaya")
+    speak("Save failed")
   end
 end
 
@@ -1339,8 +1690,9 @@ ui.btnShare.onClick = function()
   if not finalSavedUri then
     local ok, uriOrErr = pcall(saveToStorage)
     if not ok or not uriOrErr then
-      toast("File save/share mein masla aaya")
-      speak("Share karne mein masla aaya")
+      addLog("Share save error: " .. tostring(uriOrErr))
+      toast("Failed to prepare file for sharing")
+      speak("Share failed")
       return
     end
   end
@@ -1359,6 +1711,7 @@ ui.btnShare.onClick = function()
   end)
 
   if not okShare then
+    addLog("Share intent error: " .. tostring(errShare))
     toast("Share error: " .. tostring(errShare))
   end
 end
@@ -1372,7 +1725,7 @@ local function closeExtension()
   stopResultPlayer(ui.btnPlayPause)
   cleanupTemp()
   if mainDialog then mainDialog.dismiss() end
-  speak("Extension close ho gayi")
+  speak("Closed")
 end
 
 ui.btnClose.onClick = closeExtension
@@ -1382,4 +1735,4 @@ ui.btnResultClose.onClick = closeExtension
 -- SHOW MAIN FULL-SCREEN DIALOG
 -- ==========================================
 mainDialog = createFullScreenDialog(rootView)
-speak(EXT_NAME .. " open ho gaya")
+speak(EXT_NAME)
