@@ -1,12 +1,10 @@
--- ============================================================
 -- Extension Name : Gemini Audio & Broadcast Studio
 -- Created By     : Mohammed Usman (WhatsApp: 03261421100)
 -- Platform       : Jieshuo Screen Reader (Lua 5.3+)
 -- Modes          : 1) Single Speaker (TTS & Story)
---                  2) 2-Host Broadcast (Male + Female)
--- ============================================================
+-- 2) 2-Host Broadcast (Male + Female)
+
 -- PART 1 OF 3: Imports, State, Lists, English Guide, Logger, HTTP & WAV
--- ============================================================
 
 require "import"
 import "com.androlua.Http"
@@ -281,9 +279,8 @@ M.cfg = {
 }
 M.isUiInitializing = true
 
--- ============================================================
 -- Issue / Error Report Logger (Only logs errors; auto-clears on Download)
--- ============================================================
+
 function M.logIssue(source, message)
     pcall(function()
         local ts = os.date("%Y-%m-%d %H:%M:%S")
@@ -314,9 +311,8 @@ function M.clearIssueReport()
     ed.commit()
 end
 
--- ============================================================
 -- Common Helpers
--- ============================================================
+
 function M.trim(s)
     return (tostring(s or ""):match("^%s*(.-)%s*$"))
 end
@@ -505,9 +501,8 @@ function M.extractApiError(content)
     return msg
 end
 
--- ============================================================
 -- HTTP Helpers & Auto Model Discovery
--- ============================================================
+
 function M.httpPost(url, body, headers, cb)
     local wrappedCb = function(code, content)
         local ok, err = pcall(cb, code, content)
@@ -594,9 +589,8 @@ function M.discoverWorkingScriptModels(apikey, callback)
     end
 end
 
--- ============================================================
 -- Media Player & Clean WAV/PCM Engine (Smooth Edge Trimming)
--- ============================================================
+
 function M.deleteOldAudioFile()
     if S.generatedAudioPath then
         pcall(function()
@@ -732,13 +726,11 @@ function M.extractCleanPcmSegment(audioBytes)
     if pcmLen <= 0 then return 0, 0 end
     return pcmStart, pcmLen
 end
--- ============================================================
--- PART 2 OF 3: Resume System, Create Script Engine & Audio Engines
--- ============================================================
 
--- ============================================================
+-- PART 2 OF 3: Resume System, Create Script Engine & Audio Engines
+
 -- Resume & Checkpoint Helpers
--- ============================================================
+
 function M.clearDirFiles(dir)
     pcall(function()
         if dir and dir.exists() then
@@ -899,9 +891,8 @@ function M.refreshActionButtons()
     end)
 end
 
--- ============================================================
 -- Shared WAV Merger & UI Completion
--- ============================================================
+
 function M.mergePcmFilesToWav(partFilesList, pauseMs, filePrefix)
     local totalDurationSec = 0
     local okMerge, errMerge = pcall(function()
@@ -983,9 +974,8 @@ function M.onAudioReadyUI(totalDurationSec, labelPrefix)
     M.refreshActionButtons()
 end
 
--- ============================================================
 -- Text & Script Parsers
--- ============================================================
+
 function M.extractSpeakerAndBody(rawLine)
     local l = M.trim(rawLine):gsub("^[%*%-%•%d%.%)%s]+", ""):gsub("%*", ""):gsub("%b[]", "")
     l = M.trim(l)
@@ -1142,9 +1132,8 @@ function M.splitSingleTextIntoChunks(text)
     return finalChunks
 end
 
--- ============================================================
 -- STEP A: DEDICATED "CREATE SCRIPT" ENGINE (Writes Script Only)
--- ============================================================
+
 function M.startCreateScriptJob(inputText)
     S.isWritingScript = true
     M.refreshActionButtons()
@@ -1277,9 +1266,8 @@ function M.startCreateScriptJob(inputText)
     end)
 end
 
--- ============================================================
 -- STEP B1: SINGLE SPEAKER AUDIO ENGINE (Enhanced Voice Continuity Lock)
--- ============================================================
+
 function M.startSingleSpeakerAudioJob(inputText)
     S.isGenerating = true
     M.refreshActionButtons()
@@ -1468,9 +1456,8 @@ function M.startSingleSpeakerAudioJob(inputText)
     runTts(M.trim(bodyOnly))
 end
 
--- ============================================================
 -- STEP B2: 2-HOST BROADCAST AUDIO ENGINE (Dual Voice Lock + 5% Steps)
--- ============================================================
+
 function M.startBroadcastAudioJob(inputText)
     S.isGenerating = true
     M.refreshActionButtons()
@@ -1673,13 +1660,11 @@ function M.startBroadcastAudioJob(inputText)
 
     runBcTts(normScript)
 end
--- ============================================================
--- PART 3 OF 3: Share (Auto-Close Fix), Download Name Dialog, Settings & Main UI
--- ============================================================
 
--- ============================================================
+-- PART 3 OF 3: Share (Auto-Close Fix), Download Name Dialog, Settings & Main UI
+
 -- Stream Copy & File Name Sanitizer Helpers
--- ============================================================
+
 local function copyStream(input, output)
     local buffer = byte[8192]
     while true do
@@ -1709,9 +1694,8 @@ local function getDefaultDownloadName()
     return prefix .. cleanTag .. "_" .. os.date("%H%M%S")
 end
 
--- ============================================================
 -- Share Audio (Auto-Closes Overlay First So Share Menu Opens Immediately)
--- ============================================================
+
 function M.shareAudio()
     if not S.generatedAudioPath then
         M.speakOnly("Please generate audio first.")
@@ -1800,9 +1784,8 @@ function M.shareAudio()
     end)
 end
 
--- ============================================================
 -- Download System (With Custom File Name Dialog)
--- ============================================================
+
 function M.performDownload(customBaseName)
     if not S.generatedAudioPath then
         M.speakOnly("Please generate audio first.")
@@ -1960,9 +1943,8 @@ function M.showDownloadDialog()
     M.speakOnly("File ka name likhein ya Save daba kar default name se save karein.")
 end
 
--- ============================================================
 -- Dialog: Report Issue (Copy, Send on WhatsApp, Clear Log)
--- ============================================================
+
 function M.showReportIssueDialog()
     local views = {}
     local reportText = M.getIssueReport()
@@ -2078,9 +2060,8 @@ function M.showReportIssueDialog()
     repDialog.show()
 end
 
--- ============================================================
 -- Dialogs: About & Support, Description/Guide, API Key, Settings
--- ============================================================
+
 function M.showAboutDialog()
     local views = {}
     local layout = {
@@ -2444,9 +2425,8 @@ function M.showSettingsDialog()
     settingDialog.show()
 end
 
--- ============================================================
 -- Main Screen (Single Title + Keyboard Resize Safe + Share + Name Download)
--- ============================================================
+
 function M.showMain()
     M.isUiInitializing = true
     M.loadSettings()
@@ -3060,9 +3040,8 @@ function M.showMain()
     end)
 end
 
--- ============================================================
 -- Entry Point
--- ============================================================
+
 local okMain, errMain = pcall(M.showMain)
 if not okMain then
     pcall(function() M.logIssue("Startup", tostring(errMain)) end)
